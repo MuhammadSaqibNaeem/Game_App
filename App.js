@@ -9,18 +9,85 @@ import {
   Text,
   Dimensions,
   Vibration,
+  TouchableOpacity,
 } from "react-native";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { StatusBar } from "expo-status-bar";
 import { Gyroscope } from "expo-sensors";
 import { Audio } from "expo-av";
+const StartScreen = ({ onStartGame }) => {
+  const [highScores, setHighScores] = useState([]);
 
-const Ball = () => {
+  useEffect(() => {
+    const fetchHighScores = async () => {
+      try {
+        const storedHighScores = await AsyncStorage.getItem("highScores");
+        const parsedHighScores = storedHighScores
+          ? JSON.parse(storedHighScores)
+          : [];
+        setHighScores(parsedHighScores);
+      } catch (error) {
+        console.log("Error fetching high scores:", error);
+      }
+    };
+
+    fetchHighScores();
+  }, []);
+
+  const renderHighScores = () => {
+    // Sort the high scores in descending order
+    const sortedScores = highScores.sort((a, b) => b - a);
+    // Get the top 5 highest scores
+    const topScores = sortedScores.slice(0, 5);
+
+    return (
+      <View style={styles.highScoreView}>
+        <Text style={styles.highScoresTitle}>High Scores</Text>
+        {topScores.map((score, index) => (
+          <Text key={index} style={styles.highScoreItem}>
+            {index + 1}. {score}
+          </Text>
+        ))}
+      </View>
+    );
+  };
+
+  return (
+    <View style={styles.container}>
+      {highScores.length > 0 && renderHighScores()}
+      <Text style={styles.ballzText}>Ballz</Text>
+      <TouchableOpacity style={styles.startButton} onPress={onStartGame}>
+        <Text style={styles.startButtonText}>Start Game</Text>
+      </TouchableOpacity>
+    </View>
+  );
+};
+
+const Ball = ({ onGameExit }) => {
   const { width, height } = Dimensions.get("window");
+  const handleGameExit = async () => {
+    try {
+      const storedHighScores = await AsyncStorage.getItem("highScores");
+      const parsedHighScores = storedHighScores
+        ? JSON.parse(storedHighScores)
+        : [];
+      const updatedHighScores = [...parsedHighScores, score];
+      await AsyncStorage.setItem(
+        "highScores",
+        JSON.stringify(updatedHighScores)
+      );
+    } catch (error) {
+      console.log("Error updating high scores:", error);
+    }
+
+    onGameExit();
+  };
 
   const [ballPosition, setBallPosition] = useState({
     x: width / 2 - 25,
     y: height - 150,
   });
+
   const [score, setScore] = useState(0);
   const [sound, setSound] = useState();
 
@@ -35,7 +102,7 @@ const Ball = () => {
       }),
       onPanResponderRelease: (_, gestureState) => {
         const { dy } = gestureState;
-        const targetY = height - 240;
+        const targetY = height - 220;
 
         Animated.sequence([
           Animated.spring(pan, {
@@ -47,35 +114,23 @@ const Ball = () => {
             useNativeDriver: false,
           }),
         ]).start(() => {
-          if (
-            ballPosition.x >= objectPosition._value * (width - 50) - 50 &&
-            ballPosition.x <= objectPosition._value * (width - 50) + 50 &&
-            ballPosition.y >= height - 240 &&
-            ballPosition.y <= height - 190
-          ) {
+          setTimeout(() => {
             setScore((prevScore) => prevScore + 1);
-            playSound();
-            Vibration.vibrate();
-            Animated.timing(ballPosition, {
-              toValue: { x: width / 2 - 25, y: height - 150 },
-              duration: 0,
-              useNativeDriver: false,
-            }).start();
-          }
+          }, 100);
         });
       },
     })
   ).current;
 
   const [gyroData, setGyroData] = useState({ x: 0, y: 0, z: 0 });
-  const [subscription, setSubscription] = useState(null);
+  const subscription = useRef(null);
 
   const toggleGyro = async () => {
-    if (subscription) {
-      await subscription.unsubscribe();
-      setSubscription(null);
+    if (subscription.current) {
+      await subscription.current.unsubscribe();
+      subscription.current = null;
     } else {
-      setSubscription(Gyroscope.addListener(setGyroData));
+      subscription.current = Gyroscope.addListener(setGyroData);
     }
   };
 
@@ -119,14 +174,34 @@ const Ball = () => {
     toggleGyro();
 
     return () => {
-      if (subscription) {
-        subscription.unsubscribe();
-        setSubscription(null);
+      if (subscription.current) {
+        subscription.current.unsubscribe();
+        subscription.current = null;
       }
     };
   }, []);
 
   useEffect(() => {
+    const handleCollisionDetection = () => {
+      const ballX = ballPosition.x;
+      const ballY = ballPosition.y;
+      const objectX = objectPosition._value * (width - 160);
+      const objectY = height - 200;
+
+      const collisionDetected =
+        ballX + 50 >= objectX &&
+        ballX <= objectX + 80 &&
+        ballY + 50 >= objectY &&
+        ballY <= objectY + 20;
+
+      if (collisionDetected && Math.abs(gyroData.y) > 1) {
+        playSound();
+        Vibration.vibrate();
+        setBallPosition({ x: width / 2 - 25, y: height - 150 });
+        objectPosition.setValue(0); // Reset the object's position
+      }
+    };
+
     const updateBallPosition = () => {
       const { x, y } = ballPosition;
       const { x: gyroX, y: gyroY } = gyroData;
@@ -136,12 +211,42 @@ const Ball = () => {
       setBallPosition({ x: boundedX, y: boundedY });
     };
 
-    updateBallPosition();
+    const animationId = requestAnimationFrame(() => {
+      updateBallPosition();
+      handleCollisionDetection();
+    });
+
+    return () => {
+      cancelAnimationFrame(animationId);
+    };
   }, [gyroData]);
+
+  useEffect(() => {
+    const handleGameExit = async () => {
+      try {
+        const storedHighScores = await AsyncStorage.getItem("highScores");
+        const parsedHighScores = storedHighScores
+          ? JSON.parse(storedHighScores)
+          : [];
+        const updatedHighScores = [...parsedHighScores, score];
+        await AsyncStorage.setItem(
+          "highScores",
+          JSON.stringify(updatedHighScores)
+        );
+      } catch (error) {
+        console.log("Error updating high scores:", error);
+      }
+
+      onGameExit();
+    };
+
+    return () => {
+      handleGameExit();
+    };
+  }, []);
 
   return (
     <View style={styles.container}>
-      <StatusBar style="auto" />
       <Animated.View
         style={[
           styles.object,
@@ -150,7 +255,7 @@ const Ball = () => {
               {
                 translateX: objectPosition.interpolate({
                   inputRange: [0, 1],
-                  outputRange: [0, width - 240],
+                  outputRange: [-(width - 160) / 2, (width - 160) / 2],
                 }),
               },
             ],
@@ -158,6 +263,7 @@ const Ball = () => {
           },
         ]}
       />
+
       <Animated.View
         style={[
           styles.ball,
@@ -172,15 +278,49 @@ const Ball = () => {
         ]}
         {...panResponder.panHandlers}
       />
+
       <Text style={styles.score}>Score: {score}</Text>
+      <TouchableOpacity style={styles.exitButton} onPress={handleGameExit}>
+        <Text style={styles.exitButtonText}>Exit</Text>
+      </TouchableOpacity>
     </View>
   );
 };
 
 const App = () => {
+  const [gameStarted, setGameStarted] = useState(false);
+  const [highScores, setHighScores] = useState([]);
+
+  const handleStartGame = () => {
+    setGameStarted(true);
+  };
+
+  const handleGameExit = () => {
+    setGameStarted(false);
+  };
+
+  useEffect(() => {
+    const fetchHighScores = async () => {
+      try {
+        const storedHighScores = await AsyncStorage.getItem("highScores");
+        const parsedHighScores = storedHighScores
+          ? JSON.parse(storedHighScores)
+          : [];
+        setHighScores(parsedHighScores);
+      } catch (error) {
+        console.log("Error fetching high scores:", error);
+      }
+    };
+
+    fetchHighScores();
+  }, []);
+
   return (
     <View style={styles.container}>
-      <Ball />
+      {!gameStarted && (
+        <StartScreen onStartGame={handleStartGame} highScores={highScores} />
+      )}
+      {gameStarted && <Ball onGameExit={handleGameExit} />}
     </View>
   );
 };
@@ -192,11 +332,27 @@ const styles = StyleSheet.create({
     alignItems: "center",
     backgroundColor: "#F5FCFF",
   },
+  ballzText: {
+    fontSize: 40,
+    fontWeight: "bold",
+    marginBottom: 20,
+  },
+  startButton: {
+    backgroundColor: "#4CAF50",
+    paddingVertical: 10,
+    paddingHorizontal: 20,
+    borderRadius: 5,
+  },
+  startButtonText: {
+    fontSize: 20,
+    color: "white",
+  },
   object: {
     position: "absolute",
     width: 80,
     height: 20,
-    backgroundColor: "blue",
+    borderRadius: 8,
+    backgroundColor: "green",
   },
   ball: {
     position: "absolute",
@@ -207,10 +363,42 @@ const styles = StyleSheet.create({
   },
   score: {
     position: "absolute",
-    top: 50,
-    right: 20,
-    fontSize: 20,
+    top: 60,
+    alignSelf: "center",
+    fontSize: 25,
     fontWeight: "bold",
+  },
+  highScoresTitle: {
+    fontSize: 30,
+    fontWeight: "bold",
+    marginBottom: 10,
+  },
+  highScoreItem: {
+    fontSize: 18,
+    marginBottom: 5,
+    alignSelf: "center",
+  },
+  highScoreView: {
+    borderWidth: 2,
+    borderRadius: 10,
+    height: "25%",
+    width: 150,
+    justifyContent: "center",
+    alignItems: "center",
+    marginBottom: 10,
+  },
+  exitButton: {
+    backgroundColor: "#FF0000",
+    paddingVertical: 10,
+    paddingHorizontal: 20,
+    borderRadius: 5,
+    position: "absolute",
+    top: 50,
+    right: 80,
+  },
+  exitButtonText: {
+    fontSize: 20,
+    color: "white",
   },
 });
 
